@@ -3,15 +3,22 @@ from pyxirr import xirr
 import pandas as pd
 import holidays
 import Operacoes, Parcelas
+from decimal import Decimal
 
 #CONSTANTES
 PROXIMO_DIA_UTIL = 0 #DETERMINA SE O SISTEMA IRA CALCULAR DIA UTIL OU NÃO
 LIMITE_TENTATIVAS = 35000 #DETERMINA O NUMERO MAXIMO DO LOOP DE DE TENTATIVAS DE CALCULO
-VARIACAO_PADRAO = 0.00001 #DETERMINA A VARIACAO DURANTE O CALCULO DE META
+VARIACAO_PADRAO = 0.00000001 #DETERMINA A VARIACAO DURANTE O CALCULO DE META
+VARIACAO_PADRAO_3_CASAS = 0.001
+VARIACAO_PADRAO_4_CASAS = 0.0001
+VARIACAO_PADRAO_5_CASAS = 0.00001
+VARIACAO_PADRAO_INTEIRO = 0.000001
+VARIACAO_PADRAO_DECIMAL = 0.0000001
 TETO_DIAS_IOF = 365 #PRAZO MAXIMO PARA COBRANÇA DE IOF
 ALIQUOTA_IOF_DIA_PF = 0.000082 #IOF A.D PF
 ALIQUOTA_IOF_FLAT = 0.0038 #IOF FLAT // IOF A.A
 TARIFA_CREDITO = 0
+ARREDONDAMENTO_PADRAO_REAL = 2
 
 #Calcula próximo dia util
 def DataPU(data):
@@ -26,37 +33,45 @@ def DataPU(data):
     return data
 
 #Calculo por meta PARCELA com PONDERAÇÃO
-def clcParcCP(dataBase, primeiroVencimento, qtdParcelas, txAm, vlrParcela):
-    mes = primeiroVencimento.month - 1
-    ano = primeiroVencimento.year
-    lista_parcela = []
-    principal = 0
-    saldo = 0
-    iof = 0
+def clcParcCP(operCalculo : Operacoes.Operacoes):
+    
+    parcelaCalculo = Parcelas.Parcelas
 
-    for parcela in range(qtdParcelas):
+    mes = operCalculo.primeiroVencimento.month - 1
+    ano = operCalculo.primeiroVencimento.year
+
+    listaParcela = []
+
+    operCalculo.valorPrincipal = 0
+    operCalculo.valorBruto = 0
+
+    for parcela in range(operCalculo.qtdParcelas):
         if mes >= 12 or mes < 1:
             mes = 1
             ano += 1
         else:
             mes += 1
      
-        vencimento = DataPU(datetime(ano, mes, primeiroVencimento.day))
-        prazo = (vencimento - dataBase).days
-        vlrPresente = vlrParcela / ((1 + txAm) ** (prazo/30))
-        principal += vlrPresente
-        saldo += vlrParcela
+        parcelaCalculo.dataVencimento = DataPU(datetime(ano, mes, operCalculo.primeiroVencimento.day))
+        parcelaCalculo.numeroParcela = parcela + 1
+        parcelaCalculo.prazo = (parcelaCalculo.dataVencimento - operCalculo.dataBase).days
         
-        if prazo < TETO_DIAS_IOF:
-            prazoIof = prazo
+        parcelaCalculo.valorPrincipal = operCalculo.valorParcela / ((1 + operCalculo.taxaApAm) ** (parcelaCalculo.prazo/30))
+        
+        operCalculo.valorPrincipal += parcelaCalculo.valorPrincipal
+        
+        operCalculo.valorBruto += operCalculo.valorParcela
+        
+        if parcelaCalculo.prazo < TETO_DIAS_IOF:
+            prazoIof = parcelaCalculo.prazo
         else:
             prazoIof = TETO_DIAS_IOF
             
-        iof = round(vlrPresente * prazoIof * ALIQUOTA_IOF_DIA_PF, 2)
+        parcelaCalculo.valorIof = round(parcelaCalculo.valorPrincipal * prazoIof * ALIQUOTA_IOF_DIA_PF, 2)        
 
-        lista_parcela.append((parcela + 1, vencimento, prazo, vlrParcela, vlrPresente, vlrParcela - vlrPresente, iof))
+        listaParcela.append(parcelaCalculo)
 
-    return lista_parcela, principal, saldo
+    return operCalculo, listaParcela
 
 #Calculo Nominal
 def clcNominal(listaVencimentoNominal, taxaNominalAm, dataBaseNominal, vlrParcela):
@@ -69,158 +84,141 @@ def clcNominal(listaVencimentoNominal, taxaNominalAm, dataBaseNominal, vlrParcel
     
     return listaNominal, principalNominal
 
+def clcTaxaNominal(operCalculo : Operacoes.Operacoes):
+    price30 = (1 + operCalculo.taxaApAm) ** operCalculo.qtdParcelas * (operCalculo.taxaApAm) / (((1 + operCalculo.taxaApAm) ** operCalculo.qtdParcelas) - 1)
+    priceReal = round((1 + operCalculo.taxaApAm) ** (((operCalculo.primeiroVencimento - operCalculo.dataBase).days - 30) / 30 ) * price30, 8)
+
+    return price30, priceReal
+
+def clcVariacaoTaxa(meta):
+    variacao = 0
+    if abs(meta) >= 1000:
+        variacao += VARIACAO_PADRAO_3_CASAS
+    elif abs(meta) >= 100:
+        variacao += VARIACAO_PADRAO_4_CASAS
+    elif abs(meta) >= 10:
+        variacao += VARIACAO_PADRAO_5_CASAS
+    elif abs(meta) >= 1:
+        variacao += VARIACAO_PADRAO_INTEIRO
+    else:
+        variacao += VARIACAO_PADRAO_DECIMAL
+
+    if meta > 0:
+        variacao * -1
+
+    return variacao
+
+def metaClcParcCP(operCalculo : Operacoes.Operacoes, operCalculoSecundaria : Operacoes.Operacoes, meta : Decimal, saldo : Decimal):
+    tentativa = 0
+    variacao = 0
+    while round(meta, ARREDONDAMENTO_PADRAO_REAL) != 0.00 and tentativa < LIMITE_TENTATIVAS:
+        
+        operCalculo.taxaApAm += clcVariacaoTaxa(meta)
+        operCalculoSecundaria.taxaApAm = operCalculo.taxaApAm
+
+        #RECALCULA O FLUXO PORTADO COM TAXA NOVA
+        operCalculoSecundaria, listaParcelaPortabilidadeNovo = clcParcCP(operCalculoSecundaria)
+
+        #CALCULA O FLUXO NOVO COM A TAXA NOVA
+        operCalculo, listaParcelaRefinanciamentoNovo = clcParcCP(operCalculo)
+        
+        meta = saldo - (operCalculo.valorPrincipal * -1 + operCalculoSecundaria.valorPrincipal)
+
+        tentativa += 1
+    
+    return operCalculo, operCalculoSecundaria
+
+def metaClcParcTroco(operCalculo : Operacoes.Operacoes, saldo : Decimal):
+    meta = saldo - operCalculo.valorPrincipal
+    tentativa = 0
+    variacao = 0.000000000
+
+    while round(meta, ARREDONDAMENTO_PADRAO_REAL) != 0.00 and tentativa < LIMITE_TENTATIVAS:
+        if meta is None or meta < 0:
+            if abs(meta) >= 1:
+                variacao += VARIACAO_PADRAO_INTEIRO
+            else:
+                variacao += VARIACAO_PADRAO_DECIMAL
+        else:
+            if abs(meta) >= 1:
+                variacao -= VARIACAO_PADRAO_INTEIRO
+            else:
+                variacao -= VARIACAO_PADRAO_DECIMAL
+
+        operCalculo.taxaApAm += variacao
+
+        operCalculo, listaParcelaTroco = clcParcCP(operCalculo)
+
+        meta = saldo - operCalculo.valorPrincipal
+
+        tentativa += 1
+        variacao = 0
+    
+    return operCalculo
+
 #Realiza calculo das parcelas
-def MetaCalculoParcela(listaRefinanciado, listaIntermediaria):
+def MetaCalculoParcela(operPortabilidade : Operacoes.Operacoes, operRefinanciamento : Operacoes.Operacoes):
+
     #CALCULA O CONTRATO PORTADO
-    fluxoRefinanciado, principalRefinanciado, saldoRefinanciado = clcParcCP(dataBase = datetime.strptime(listaRefinanciado[0][0], "%d/%m/%Y"), 
-            primeiroVencimento = datetime.strptime(listaRefinanciado[0][1], "%d/%m/%Y"), qtdParcelas = listaRefinanciado[0][2], 
-            txAm = listaRefinanciado[0][3]/100, vlrParcela = listaRefinanciado[0][4])
+    operPortabilidade, listaParcela = clcParcCP(operPortabilidade)
     
     #CALCULA O FLUXO INTERMEDIARIO, QUE SERA UTILIZADO PARA CALCULAR A TAXA CL DO NOVO CONTRATO
-    fluxoIntermediario, principalIntermediario, saldoReIntermediario = clcParcCP(dataBase = datetime.strptime(listaIntermediaria[0][0], "%d/%m/%Y"), 
-            primeiroVencimento = datetime.strptime(listaIntermediaria[0][1], "%d/%m/%Y"), qtdParcelas = listaIntermediaria[0][2], 
-            txAm = listaIntermediaria[0][3]/100, vlrParcela = listaIntermediaria[0][4])
+    operRefinanciamento, listaParcelaRefinanciamento = clcParcCP(operRefinanciamento)
     
-    saldo = principalRefinanciado * -1 + principalIntermediario
-    
-    txClAm = listaIntermediaria[0][3]
-    meta = 1    
-    tentativa = 0
-    
+    saldo = operPortabilidade.valorPrincipal * -1 + operRefinanciamento.valorPrincipal
+
     ##########
     #CALCULO DO NOVO CONTRATO
     ##########
-
-    while round(meta, 2) != 0.00 and tentativa < LIMITE_TENTATIVAS:
-        if meta < 0:
-            txClAm += VARIACAO_PADRAO
-        else:
-            txClAm -= VARIACAO_PADRAO
-
-        #RECALCULA O FLUXO PORTADO COM TAXA NOVA
-        fluxoRefinanciadoNovo, principalRefinanciadoNovo, saldoRefinanciadoNovo = clcParcCP(dataBase = datetime.strptime(listaRefinanciado[0][0], "%d/%m/%Y"), 
-            primeiroVencimento = datetime.strptime(listaRefinanciado[0][1], "%d/%m/%Y"), qtdParcelas = listaRefinanciado[0][2], 
-            txAm = txClAm/100, vlrParcela = listaRefinanciado[0][4])
-
-        #CALCULA O FLUXO NOVO COM A TAXA NOVA
-        fluxoNovo, principalNovo, saldoNovo = clcParcCP(dataBase = datetime.strptime(listaIntermediaria[0][0], "%d/%m/%Y"), 
-                primeiroVencimento = datetime.strptime(listaIntermediaria[0][1], "%d/%m/%Y"), qtdParcelas = listaIntermediaria[0][2], 
-                txAm =txClAm/100, vlrParcela = listaIntermediaria[0][4])
-        
-        meta = saldo - (principalRefinanciadoNovo * -1 + principalNovo)
-
-        tentativa += 1
+    operPortabilidadeNovo, operNovoContrato = metaClcParcCP(operPortabilidade, operRefinanciamento, 1, saldo)
 
     ##########
-    #CALCULO DO FLUXO IOF
+    #CALCULO DO TROCO
     ##########
+    operTroco = operNovoContrato
 
-    price30 = (1 + txClAm/100) ** listaIntermediaria[0][2] * (txClAm/100) / (((1 + txClAm/100) ** listaIntermediaria[0][2]) - 1)
-    priceReal = round((1 + txClAm/100) ** (((datetime.strptime(listaIntermediaria[0][1], "%d/%m/%Y") - datetime.strptime(listaIntermediaria[0][0], "%d/%m/%Y")).days - 30) / 30 ) * price30, 8)
+    price30, priceReal = clcTaxaNominal(operRefinanciamento)
 
-    parcelaNovoIof = round(saldo * priceReal, 2)
-
-    txApIof = listaIntermediaria[0][3]
-    
-    meta = 1
-    tentativa = 0
-
-    while round(meta, 2) != 0.00 and tentativa < LIMITE_TENTATIVAS:
-        if meta < 0:
-            txApIof += VARIACAO_PADRAO
-        else:
-            txApIof -= VARIACAO_PADRAO
-
-        fluxoNovoIof, principalNovoIof, saldoNovoIof = clcParcCP(dataBase = datetime.strptime(listaIntermediaria[0][0], "%d/%m/%Y"), 
-                        primeiroVencimento = datetime.strptime(listaIntermediaria[0][1], "%d/%m/%Y"), qtdParcelas = listaIntermediaria[0][2], 
-                        txAm =txApIof/100, vlrParcela = parcelaNovoIof)
-    
-        meta = saldo - principalNovoIof
-
-        tentativa += 1
-    
+    operTroco.valorParcela = round(saldo * priceReal, 2)
+   
+    operTroco = metaClcParcTroco(operTroco, saldo)
     
     ##########
     #CALCULO DO FLUXO NOMINAL
     ##########
     #Prepara vencimentos sequenciais a cada 30 dias
-    fluxoVencimentoNominal = []
-    for linha in fluxoIntermediario:
-        if len(fluxoVencimentoNominal) == 0:
-            fluxoVencimentoNominal.append(datetime.strptime(listaRefinanciado[0][1], "%d/%m/%Y"))# SE FOR PRIMEIRO VENCIMENTO É O VENCIMENTO PADRAO
-        else:
-            fluxoVencimentoNominal.append(datetime.strptime(listaRefinanciado[0][1], "%d/%m/%Y") + timedelta(days=30) * len(fluxoVencimentoNominal))
+    # fluxoVencimentoNominal = []
+    # fluxoVencimentoNominal.append(operRefinanciamento.dataBase)
+
+    # for linha in range(operRefinanciamento.qtdParcelas):
+    #     fluxoVencimentoNominal.append(operRefinanciamento.dataBase + timedelta(days=30) * len(fluxoVencimentoNominal))
     
-    tentativa = 0
-    meta = 1
-    taxaNomAm = txClAm
-    principalNominal = 0
-    while round(principalIntermediario - principalNominal, 2) != 0.00 and tentativa < LIMITE_TENTATIVAS:
-        if meta < 0:
-            taxaNomAm += VARIACAO_PADRAO
-        else:
-            taxaNomAm -= VARIACAO_PADRAO
+    # tentativa = 0
+    # meta = 1
+    # taxaNomAm = txClAm
+    # principalNominal = 0
+    # while round(principalIntermediario - principalNominal, 2) != 0.00 and tentativa < LIMITE_TENTATIVAS:
+    #     if meta < 0:
+    #         taxaNomAm += VARIACAO_PADRAO
+    #     else:
+    #         taxaNomAm -= VARIACAO_PADRAO
         
-        principalNominal = clcNominal(dataBaseNominal=datetime.strptime(listaRefinanciado[0][0], "%d/%m/%Y"), listaVencimentoNominal=fluxoVencimentoNominal, taxaNominalAm=taxaNomAm, vlrParcela=listaIntermediaria[0][4])
-        meta = round(principalIntermediario - principalNominal, 2) 
-        tentativa += 1
-
-    ##########
-    #RETORNOS
-    ##########
+    #     principalNominal = clcNominal(dataBaseNominal=datetime.strptime(listaRefinanciado[0][0], "%d/%m/%Y"), listaVencimentoNominal=fluxoVencimentoNominal, taxaNominalAm=taxaNomAm, vlrParcela=operRefinanciamento.valorParcela)
+    #     meta = round(principalIntermediario - principalNominal, 2) 
+    #     tentativa += 1
     
-    txApIof = txApIof #Tx.AP.am IOF
-    parcelaNovoIof = parcelaNovoIof #Parc.
-
-    novoPrinc = principalNovoIof #Novo Princ.
-    dtBase = datetime.strptime(listaRefinanciado[0][0], "%d/%m/%Y") #Dt. Base
-    vlrPrinc = principalIntermediario #Vlr Princ.
-    vlrBruto = saldoReIntermediario #Vlr Bruto
-    vlrParcela = listaIntermediaria[0][4] #Vlr Parcela
-    txApAm = listaIntermediaria[0][3] #Tx.Ap.am
-    txApAa = ((listaIntermediaria[0][3] / 100 + 1) ** 12 - 1) * 100 #Tx.Ap.aa
-   
-    txApAaIof = ((txApIof / 100 + 1) ** 12 - 1) * 100 #Tx.Ap.aa IOF
-    iof = round(sum(linha[6] for linha in fluxoNovoIof) + (principalNovoIof * ALIQUOTA_IOF_FLAT), 2) #iof geral
-
-    liberado = round(principalIntermediario - iof - TARIFA_CREDITO, 2) #Liberado
-    lib_cliente = principalNovoIof - iof #Lib. Cliente
-    vctoOp = fluxoNovoIof[-1][1] #Vcto Op
-    
-    ##########
-    #CL
-    ##########
-    txClAm = txClAm #Tx CL Mês
-    txClAa = ((txClAm / 100 + 1) ** 12 - 1) * 100 #Tx.Ap.aa IOF
-
-    ##########
-    #Nominal
-    ##########
-    taxaNomAm = taxaNomAm
-    taxaNomAA = ((taxaNomAm / 100 + 1) ** 12 - 1) * 100
-
     ##########
     #CET
     ##########
-    listaCetVencimentos = [dtBase]
-    for linha in fluxoIntermediario:
-        listaCetVencimentos.append(linha[1])
+    # listaCetVencimentos = [dtBase]
+    # for linha in fluxoIntermediario:
+    #     listaCetVencimentos.append(linha[1])
 
-    listaCetPrincipal = [liberado * -1]
-    for linha in fluxoIntermediario:
-        listaCetPrincipal.append(linha[3])
+    # listaCetPrincipal = [liberado * -1]
+    # for linha in fluxoIntermediario:
+    #     listaCetPrincipal.append(linha[3])
 
-    txCetAa = xirr(listaCetVencimentos, listaCetPrincipal) * 100 #Tx.CET aa
-    txCetAm = ((1 + txCetAa / 100) ** (30/365) -1) * 100 
+    # txCetAa = xirr(listaCetVencimentos, listaCetPrincipal) * 100 #Tx.CET aa
+    # txCetAm = ((1 + txCetAa / 100) ** (30/365) -1) * 100 
 
-    #print(f'principalRefinanciado: {principalRefinanciado}, saldoRefinanciado: {saldoRefinanciado}')
-    #print(f'principalRefinanciadoNovo {principalRefinanciadoNovo}, saldoRefinanciadoNovo {saldoRefinanciadoNovo}')
-    #print(f'principalNovo {principalNovo}, saldoNovo {saldoNovo}')
-    #print(f'principalNovoIof {principalNovoIof}, saldoNovoIof {saldoNovoIof}')
-    #print(f'principalIntermediario {principalIntermediario}, saldoReIntermediario {saldoReIntermediario}')
-
-    #return fluxoRefinanciado #FLUXO REFINANCIADO
-    #return fluxoRefinanciadoNovo #FLUXO NOVA OPERAÇÃO - FLUXO DA PORTABILIDADE RECALCULADO COM A NOVA TAXA
-    #return fluxoIntermediario #FLUXO NOVA OPERAÇÃO
-    return fluxoNovo #FLUXO NOVO PRINCIPAL
-    #return fluxoNovoIof #NOVO IOF
+    return operTroco

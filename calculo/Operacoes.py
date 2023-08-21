@@ -3,7 +3,7 @@ from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
 class Operacoes:
-    def __init__(self, numeroOperacao: str, numeroOperacaoRefinanciada: str, qtdParcelas: int, dataBase: date, primeiroVencimento: date, ultimoVencimento: date, prazo: int, valorPrincipal: Decimal, valorIof: Decimal, valorJuros: Decimal, valorTarifas: Decimal, valorBruto: Decimal, valorLiquido: Decimal, taxaApAm: float, taxaNmAm: float, taxaClAm: float, taxaApAa: float, taxaNmAa: float, taxaClAa: float                 ):
+    def __init__(self, numeroOperacao: str, numeroOperacaoRefinanciada: str, qtdParcelas: int, valorParcela: Decimal, dataBase: date, primeiroVencimento: date, ultimoVencimento: date, prazo: int, valorPrincipal: Decimal, valorIof: Decimal, valorJuros: Decimal, valorTarifas: Decimal, valorBruto: Decimal, valorLiquido: Decimal, taxaApAm: float, taxaNmAm: float, taxaClAm: float, taxaApAa: float, taxaNmAa: float, taxaClAa: float):
         self.numeroOperacao = numeroOperacao
         self.numeroOperacaoRefinanciada = numeroOperacaoRefinanciada
 
@@ -13,6 +13,7 @@ class Operacoes:
         self.prazo = prazo
 
         self.qtdParcelas = qtdParcelas
+        self.valorParcela = valorParcela
 
         self.valorPrincipal = valorPrincipal
         self.valorIof = valorIof
@@ -41,11 +42,9 @@ class Operacoes:
         else:
             mes = 2
         
-        self.primeiroVencimento += relativedelta(months=mes)
-        self.primeiroVencimento = datetime(self.primeiroVencimento.year, self.primeiroVencimento.month, 7)
+        self.primeiroVencimento = self.dataBase.replace(day=7) + relativedelta(months=mes)
 
-        self.ultimoVencimento = self.primeiroVencimento
-        self.ultimoVencimento += relativedelta(months=self.qtdParcelas-1)
+        self.ultimoVencimento = self.primeiroVencimento + relativedelta(months=self.qtdParcelas-1)
     
     def clcPrazo(self):
         self.prazo = self.ultimoVencimento - self.dataBase
@@ -59,3 +58,5 @@ class Operacoes:
         self.clcVencimentos()
         self.clcPrazo()
         self.clcTaxaAa()
+        self.valorPrincipal = 0
+        self.valorBruto = 0

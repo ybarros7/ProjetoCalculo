@@ -3,13 +3,15 @@ from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
 class Parcelas:
-    def __init__(self, numeroOperacao: str, dataBase: date, dataVencimento: date, prazo: int, valorPrincipal: Decimal, valorIof = Decimal, valorJuros = Decimal, valorPmt = Decimal):
+    def __init__(self, numeroOperacao: str, dataBase: date, numeroParcela: int, dataVencimento: date, prazo: int, valorPrincipal: Decimal, valorIof = Decimal, valorJuros = Decimal, valorPmt = Decimal):
         self.numeroOperacao = numeroOperacao
 
         self.dataBase = dataBase
         
         self.dataVencimento = dataVencimento
         self.prazo = prazo
+
+        self.numeroParcela = numeroParcela
 
         self.valorPrincipal = valorPrincipal
         self.valorIof = valorIof
